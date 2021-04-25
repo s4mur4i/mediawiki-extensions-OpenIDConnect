@@ -34,6 +34,7 @@ class OpenIDConnect extends PluggableAuth {
 
 	const OIDC_SUBJECT_SESSION_KEY = 'OpenIDConnectSubject';
 	const OIDC_ISSUER_SESSION_KEY = 'OpenIDConnectIssuer';
+	const OIDC_GOON_GROUP_KEY = 'OpenIDGoonGroup';
 	const OIDC_ACCESSTOKEN_SESSION_KEY = 'OpenIDConnectAccessToken';
 
 	const OIDC_GROUP_PREFIX = 'oidc_';
@@ -182,6 +183,11 @@ class OpenIDConnect extends PluggableAuth {
 					self::OIDC_ACCESSTOKEN_SESSION_KEY,
 					$oidc->getAccessTokenPayload()
 				);
+				$authManager->setAuthenticationSessionData(
+					self::OIDC_GOON_GROUP_KEY,
+					$oidc->getIdTokenPayload()->grp
+				);
+				wfDebugLog( 'OpenID Connect', 'Goon Grp: ' . $oidc->getIdTokenPayload()->grp );
 
 				list( $id, $username ) =
 					$this->findUser( $this->subject, $this->issuer );
@@ -236,6 +242,8 @@ class OpenIDConnect extends PluggableAuth {
 					self::OIDC_SUBJECT_SESSION_KEY, $this->subject );
 				$authManager->setAuthenticationSessionData(
 					self::OIDC_ISSUER_SESSION_KEY, $this->issuer );
+				$authManager->setAuthenticationSessionData(
+					self::OIDC_GOON_GROUP_KEY, $oidc->getIdTokenPayload()->grp );
 				return true;
 			}
 
@@ -320,31 +328,15 @@ class OpenIDConnect extends PluggableAuth {
 	}
 
 	private static function getOIDCGroups( User $user ) {
-		$accessToken = self::getAccessToken( $user );
-		if ( $accessToken === null ) {
-			wfDebugLog( 'OpenID Connect', 'No token found for user' . PHP_EOL );
-			return [];
-		}
-		$config = self::issuerConfig( $accessToken->iss );
-		if ( $config === null ) {
-			wfDebugLog( 'OpenID Connect', "No config found for issuer '$accessToken->iss'" . PHP_EOL );
+		$goonGroup = self::getGoonGroup( $user );
+		if ( $goonGroup === null ) {
+			wfDebugLog( 'OpenID Connect', 'No Group found for user' . PHP_EOL );
 			return [];
 		}
 		$new_oidc_groups = [];
-		foreach ( [ 'global_roles', 'wiki_roles' ] as $role_config ) {
-			$roleProperty = self::getNestedPropertyAsArray( $config, [ $role_config, 'property' ] );
-			if ( empty( $roleProperty ) ) {
-				continue;
-			}
-			$intermediatePrefixes = ( self::getNestedPropertyAsArray( $config, [ $role_config, 'prefix' ] )
-				?: [ '' ] );
-			foreach ( self::getNestedPropertyAsArray( $accessToken, $roleProperty ) as $role ) {
-				foreach ( $intermediatePrefixes as $prefix ) {
-					$new_oidc_groups[] = self::OIDC_GROUP_PREFIX . $prefix . $role;
-				}
-			}
-		}
+		$new_oidc_groups[] = self::OIDC_GROUP_PREFIX . $goonGroup;
 		$new_oidc_groups = array_unique( $new_oidc_groups );
+		wfDebugLog( 'OpenID Connect', 'oidc_groups' . $new_oidc_groups);
 		return $new_oidc_groups;
 	}
 
@@ -375,17 +367,13 @@ class OpenIDConnect extends PluggableAuth {
 			: null;
 	}
 
-	private static function getAccessToken( User $user ) {
-		$accessToken = self::getAuthManager()
-			->getAuthenticationSessionData( self::OIDC_ACCESSTOKEN_SESSION_KEY );
-		if ( $accessToken === null ) {
+	private static function getGoonGroup( User $user ) {
+		$goonGroup = self::getAuthManager()->getAuthenticationSessionData( self::OIDC_GOON_GROUP_KEY );
+		wfDebugLog( 'OpenID Connect', 'Goon groups found:' . $goonGroup);
+		if ( $goonGroup === null ) {
 			return null;
 		}
-		list( $userId ) = self::findUser( $accessToken->sub, $accessToken->iss );
-		if ( $userId != $user->getId() ) {
-			return null;
-		}
-		return $accessToken;
+		return $goonGroup;
 	}
 
 	private static function findUser( $subject, $issuer ) {
@@ -418,14 +406,7 @@ class OpenIDConnect extends PluggableAuth {
 
 	private static function getPreferredUsername( $config, $oidc, $realname,
 		$email ) {
-		if ( isset( $config['preferred_username'] ) ) {
-			wfDebugLog( 'OpenID Connect', 'Using ' . $config['preferred_username'] .
-				' attribute for preferred username.' . PHP_EOL );
-			$preferred_username =
-				$oidc->getIdTokenPayload()->( $config['preferred_username'] );
-		} else {
-			$preferred_username = $oidc->getIdTokenPayload()->( 'preferred_username' );
-		}
+		$preferred_username = $oidc->getIdTokenPayload()->username;
 		if ( strlen( $preferred_username ) > 0 ) {
 			// do nothing
 		} elseif ( strlen( $realname ) > 0 &&
